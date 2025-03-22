@@ -2,7 +2,7 @@ import streamlit as st
 import psycopg2
 import psycopg2.extras
 import os
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import json
 import pandas as pd
 import time
@@ -18,10 +18,167 @@ st.set_page_config(
     layout="wide"
 )
 
+class LLMSemanticAnalyzer:
+    """Class to analyze and infer column semantics using LLM."""
+
+    def __init__(self, llm_service_host="llama-service", llm_service_port="8080"):
+        """Initialize the semantic analyzer with LLM service connection details."""
+        self.llm_service_host = llm_service_host
+        self.llm_service_port = llm_service_port
+
+    async def get_llm_response(self, prompt: str) -> str:
+        """Get a response from the LLM Runtime API."""
+        json_data = {
+            'prompt': prompt,
+            'temperature': 0.1,
+            'n_predict': 200,  # Short responses are fine for column semantics
+            'stream': True,
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            async with client.stream('POST', f'http://{self.llm_service_host}:{self.llm_service_port}/completion',
+                                    json=json_data) as response:
+                full_response = ""
+                async for chunk in response.aiter_bytes():
+                    try:
+                        data = json.loads(chunk.decode('utf-8')[6:])
+                        if data['stop'] is False:
+                            full_response += data['content']
+                    except:
+                        pass
+
+        return full_response.strip()
+
+    async def infer_column_semantics_async(self,
+                                          table_name: str,
+                                          column_name: str,
+                                          data_type: str,
+                                          sample_values: Optional[List[Any]] = None) -> str:
+        """
+        Use LLM to infer the semantic meaning of a column based on its name, type, and sample values.
+
+        Args:
+            table_name: Name of the table containing the column
+            column_name: Name of the column to analyze
+            data_type: PostgreSQL data type of the column
+            sample_values: Optional list of sample values from the column
+
+        Returns:
+            A string describing the semantic meaning of the column
+        """
+        # Format sample values if provided
+        sample_str = ""
+        if sample_values and len(sample_values) > 0:
+            sample_str = f"\nSample values: {', '.join(str(v) for v in sample_values[:5])}"
+
+        prompt = f"""You are an expert database analyst helping infer the semantic meaning of database columns.
+Given the following information about a database column, provide a brief, one-sentence explanation of what this column likely represents in a business context.
+
+Table name: {table_name}
+Column name: {column_name}
+Data type: {data_type}{sample_str}
+
+Focus especially on:
+1. If this is a date/time column, what specific event or point in time does it track?
+2. If this is a status column, what process or state does it track?
+3. If this is an ID column, what entity does it reference?
+4. If this is a numeric column, what is being measured or counted?
+
+Your response should be a single, concise sentence describing what this column represents in business terms.
+Response:"""
+
+        return await self.get_llm_response(prompt)
+
+    def infer_column_semantics(self,
+                              table_name: str,
+                              column_name: str,
+                              data_type: str,
+                              sample_values: Optional[List[Any]] = None) -> str:
+        """Synchronous wrapper for infer_column_semantics_async."""
+        return asyncio.run(self.infer_column_semantics_async(table_name, column_name, data_type, sample_values))
+
+    async def batch_infer_column_semantics_async(self,
+                                               columns_info: List[Dict[str, Any]]) -> Dict[str, str]:
+        """
+        Process multiple columns in batch to reduce API calls.
+
+        Args:
+            columns_info: List of dictionaries with table_name, column_name, data_type, and optional sample_values
+
+        Returns:
+            Dictionary mapping column keys (table.column) to their semantic descriptions
+        """
+        # Build a comprehensive prompt for all columns
+        prompt = """You are an expert database analyst helping infer the semantic meaning of database columns.
+For each of the following database columns, provide a brief, one-sentence explanation of what each column likely represents in a business context.
+
+"""
+        for i, col_info in enumerate(columns_info):
+            table_name = col_info['table_name']
+            column_name = col_info['column_name']
+            data_type = col_info['data_type']
+            sample_values = col_info.get('sample_values', [])
+
+            prompt += f"Column {i+1}:\n"
+            prompt += f"Table name: {table_name}\n"
+            prompt += f"Column name: {column_name}\n"
+            prompt += f"Data type: {data_type}\n"
+
+            if sample_values and len(sample_values) > 0:
+                prompt += f"Sample values: {', '.join(str(v) for v in sample_values[:3])}\n"
+
+            prompt += "\n"
+
+        prompt += """For each column, focus especially on:
+1. If it's a date/time column, what specific event or point in time does it track?
+2. If it's a status column, what process or state does it track?
+3. If it's an ID column, what entity does it reference?
+4. If it's a numeric column, what is being measured or counted?
+
+Format your response as:
+Column 1: [one-sentence description]
+Column 2: [one-sentence description]
+...and so on.
+
+Response:"""
+
+        response = await self.get_llm_response(prompt)
+
+        # Parse the response into a dictionary
+        semantics = {}
+        lines = response.strip().split('\n')
+
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+
+            # Try to match "Column X: description" pattern
+            if line.lower().startswith('column'):
+                parts = line.split(':', 1)
+                if len(parts) == 2 and len(parts[1].strip()) > 0:
+                    col_idx = i % len(columns_info)  # In case response doesn't match request count
+                    col_info = columns_info[col_idx]
+                    col_key = f"{col_info['table_name']}.{col_info['column_name']}"
+                    semantics[col_key] = parts[1].strip()
+
+        # Fill in any missing columns with generic descriptions
+        for col_info in columns_info:
+            col_key = f"{col_info['table_name']}.{col_info['column_name']}"
+            if col_key not in semantics:
+                semantics[col_key] = f"Column related to {col_info['column_name'].replace('_', ' ')}"
+
+        return semantics
+
+    def batch_infer_column_semantics(self, columns_info: List[Dict[str, Any]]) -> Dict[str, str]:
+        """Synchronous wrapper for batch_infer_column_semantics_async."""
+        return asyncio.run(self.batch_infer_column_semantics_async(columns_info))
+
+
 class DatabaseAnalyzer:
     """Class to analyze PostgreSQL database schema and execute queries."""
 
-    def __init__(self, dbname: str, user: str, password: str, host: str = "localhost", port: str = "5432"):
+    def __init__(self, dbname: str, user: str, password: str, host: str = "localhost", port: str = "5432",
+                 llm_host: str = "llama-service", llm_port: str = "8080"):
         """Initialize with database connection parameters."""
         self.connection_params = {
             "dbname": dbname,
@@ -33,6 +190,12 @@ class DatabaseAnalyzer:
         self.connection = None
         self.schema_info = {}
         self.column_semantics = {}  # Store inferred meanings of column names
+
+        # Initialize the semantic analyzer
+        self.semantic_analyzer = LLMSemanticAnalyzer(
+            llm_service_host=llm_host,
+            llm_service_port=llm_port
+        )
 
     def connect(self) -> Tuple[bool, str]:
         """Establish connection to the database."""
@@ -191,120 +354,108 @@ class DatabaseAnalyzer:
 
         return result[0] if result and result[0] else ""
 
-    def infer_column_semantics(self, table_name: str, column_name: str, data_type: str) -> str:
+    def analyze_column_semantics(self, batch_size: int = 10) -> Dict[str, str]:
         """
-        Infer the semantic meaning of a column based on its name and type.
-        This is a heuristic-based approach to understand column purposes.
+        Analyze all columns in the database to infer their semantics using the LLM.
+        Uses batching to reduce the number of LLM API calls.
+
+        Args:
+            batch_size: Number of columns to process in a single LLM call
+
+        Returns:
+            Dictionary mapping column keys (table.column) to their semantic descriptions
+        """
+        if not self.connection:
+            self.connect()
+
+        # Get all tables
+        tables = self.get_tables()
+
+        # Collect all columns with their types and sample values
+        all_columns = []
+
+        for table in tables:
+            columns = self.get_table_columns(table)
+            sample_data = self.get_sample_data(table, limit=3)
+
+            for column in columns:
+                column_info = {
+                    'table_name': table,
+                    'column_name': column['name'],
+                    'data_type': column['type'],
+                    'sample_values': []
+                }
+
+                # Add sample values if available
+                if sample_data:
+                    for row in sample_data:
+                        if column['name'] in row and row[column['name']] is not None:
+                            column_info['sample_values'].append(row[column['name']])
+
+                all_columns.append(column_info)
+
+        # Process columns in batches
+        semantics = {}
+        for i in range(0, len(all_columns), batch_size):
+            batch = all_columns[i:i+batch_size]
+            batch_results = self.semantic_analyzer.batch_infer_column_semantics(batch)
+            semantics.update(batch_results)
+
+        self.column_semantics = semantics
+        return semantics
+
+    def get_column_semantics(self, table_name: str, column_name: str) -> str:
+        """
+        Get the semantic meaning for a specific column.
+        If not available, infer it on demand using the LLM.
         """
         column_key = f"{table_name}.{column_name}"
 
-        # Check if we already analyzed this column
+        # Check if we already have semantics for this column
         if column_key in self.column_semantics:
             return self.column_semantics[column_key]
 
-        # Try to get official comment from database
+        # Try to get official comment from database first
         comment = self.get_comment_for_column(table_name, column_name)
         if comment:
             self.column_semantics[column_key] = comment
             return comment
 
-        # Common naming patterns for date/time fields
-        date_created_patterns = ['created_at', 'creation_date', 'date_created', 'created_on']
-        date_updated_patterns = ['updated_at', 'modification_date', 'date_updated', 'modified_on', 'last_updated']
-        date_deleted_patterns = ['deleted_at', 'deletion_date', 'date_deleted', 'removed_on']
+        # Get column type and sample values
+        cursor = self.connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("""
+            SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            AND table_name = %s
+            AND column_name = %s
+        """, (table_name, column_name))
 
-        # Common patterns for specific types of dates
-        delivery_patterns = ['delivery_date', 'delivered_at', 'date_delivered']
-        dispatch_patterns = ['dispatch_date', 'dispatched_at', 'date_dispatched', 'shipped_date', 'shipped_at']
-        order_patterns = ['order_date', 'ordered_at', 'date_ordered']
-        payment_patterns = ['payment_date', 'paid_at', 'date_paid']
+        result = cursor.fetchone()
+        data_type = result['data_type'] if result else 'unknown'
 
-        # Id patterns
-        id_patterns = ['_id', 'id', '_key', 'uuid', 'guid']
+        # Get sample values
+        sample_values = []
+        try:
+            cursor.execute(f"SELECT {column_name} FROM {table_name} WHERE {column_name} IS NOT NULL LIMIT 3")
+            for row in cursor.fetchall():
+                sample_values.append(row[0])
+        except:
+            # If query fails (e.g., column doesn't exist), continue without sample values
+            pass
 
-        # Status patterns
-        status_patterns = ['status', 'state', 'condition']
+        cursor.close()
 
-        # Lowercased for case-insensitive matching
-        col_lower = column_name.lower()
+        # Use LLM to infer semantics
+        semantics = self.semantic_analyzer.infer_column_semantics(
+            table_name,
+            column_name,
+            data_type,
+            sample_values
+        )
 
-        # Infer meanings based on patterns
-        meaning = ""
-
-        # Date semantics
-        if data_type in ('date', 'timestamp', 'timestamptz', 'datetime'):
-            if any(pattern in col_lower for pattern in date_created_patterns):
-                meaning = "Timestamp when the record was created"
-            elif any(pattern in col_lower for pattern in date_updated_patterns):
-                meaning = "Timestamp when the record was last updated"
-            elif any(pattern in col_lower for pattern in date_deleted_patterns):
-                meaning = "Timestamp when the record was deleted (for soft deletes)"
-            elif any(pattern in col_lower for pattern in delivery_patterns):
-                meaning = "Date when items were actually delivered to the customer"
-            elif any(pattern in col_lower for pattern in dispatch_patterns):
-                meaning = "Date when items were dispatched from the warehouse/facility"
-            elif any(pattern in col_lower for pattern in order_patterns):
-                meaning = "Date when the order was placed"
-            elif any(pattern in col_lower for pattern in payment_patterns):
-                meaning = "Date when payment was received"
-            elif 'due' in col_lower:
-                meaning = "Due date or deadline"
-            elif 'start' in col_lower:
-                meaning = "Start date of an event or period"
-            elif 'end' in col_lower:
-                meaning = "End date of an event or period"
-
-        # Numeric semantics
-        elif data_type in ('integer', 'bigint', 'numeric', 'decimal', 'double precision'):
-            if 'price' in col_lower or 'cost' in col_lower or 'amount' in col_lower:
-                meaning = "Monetary value"
-            elif 'quantity' in col_lower or 'count' in col_lower or 'number' in col_lower:
-                meaning = "Quantity or count"
-            elif 'discount' in col_lower:
-                meaning = "Discount value (possibly percentage if between 0-1 or 0-100)"
-            elif 'total' in col_lower:
-                meaning = "Total calculated value"
-            elif any(col_lower.endswith(suffix) for suffix in id_patterns):
-                meaning = "Identifier or foreign key"
-
-        # Boolean semantics
-        elif data_type == 'boolean':
-            if 'is_' in col_lower or 'has_' in col_lower:
-                attribute = col_lower.replace('is_', '').replace('has_', '')
-                meaning = f"Indicates if the record {attribute}"
-            elif 'active' in col_lower or 'enabled' in col_lower:
-                meaning = "Indicates if the record is active or enabled"
-
-        # String semantics
-        elif data_type in ('character varying', 'varchar', 'text', 'char'):
-            if any(pattern in col_lower for pattern in status_patterns):
-                meaning = "Status or state of the record"
-            elif 'name' in col_lower:
-                meaning = "Name or title"
-            elif 'description' in col_lower or 'desc' in col_lower:
-                meaning = "Descriptive text"
-            elif 'code' in col_lower:
-                meaning = "Code or identifier"
-            elif 'address' in col_lower:
-                meaning = "Address information"
-            elif 'email' in col_lower:
-                meaning = "Email address"
-            elif 'phone' in col_lower:
-                meaning = "Phone number"
-
-        # If no specific meaning was inferred
-        if not meaning:
-            if any(col_lower.endswith(suffix) for suffix in id_patterns):
-                if col_lower == 'id' or col_lower.endswith('_id'):
-                    relation = col_lower.replace('_id', '')
-                    if relation:
-                        meaning = f"Identifier for a {relation}"
-                    else:
-                        meaning = "Primary identifier"
-
-        # Save inferred meaning
-        self.column_semantics[column_key] = meaning
-        return meaning
+        self.column_semantics[column_key] = semantics
+        return semantics
 
     def get_sample_data(self, table_name: str, limit: int = 3) -> List[Dict[str, Any]]:
         """Get sample data from a table."""
@@ -331,7 +482,7 @@ class DatabaseAnalyzer:
             cursor.close()
 
     def analyze_schema(self) -> Dict[str, Any]:
-        """Analyze the database schema and store the information."""
+        """Analyze the database schema and store the information with LLM-enhanced semantics."""
         tables = self.get_tables()
         foreign_keys = self.get_foreign_keys()
         primary_keys = self.get_primary_keys()
@@ -344,6 +495,9 @@ class DatabaseAnalyzer:
             "column_semantics": {}
         }
 
+        # First, pre-analyze all column semantics in batches to reduce LLM API calls
+        self.analyze_column_semantics(batch_size=10)
+
         # Get information about each table and its columns
         for table in tables:
             columns = self.get_table_columns(table)
@@ -354,8 +508,8 @@ class DatabaseAnalyzer:
             # Process each column and add semantics
             processed_columns = []
             for column in columns:
-                # Infer semantics for this column
-                semantics = self.infer_column_semantics(table, column["name"], column["type"])
+                # Get semantics for this column from the LLM analysis
+                semantics = self.column_semantics.get(f"{table}.{column['name']}", "")
 
                 # Add semantics to column info
                 column_with_semantics = column.copy()
@@ -376,21 +530,29 @@ class DatabaseAnalyzer:
             if sample_data:
                 schema_info["sample_data"][table] = sample_data
 
-        # Add relationship information
+        # Add relationship information with enhanced semantics
         for fk in foreign_keys:
-            schema_info["relationships"].append({
+            relationship = {
                 "table": fk["table"],
                 "column": fk["column"],
                 "references_table": fk["foreign_table"],
                 "references_column": fk["foreign_column"]
-            })
+            }
+
+            # Add semantics for the relationship
+            fk_semantic = self.column_semantics.get(f"{fk['table']}.{fk['column']}", "")
+            pk_semantic = self.column_semantics.get(f"{fk['references_table']}.{fk['references_column']}", "")
+
+            if fk_semantic or pk_semantic:
+                relationship["semantics"] = f"Connects {fk_semantic or fk['table']} to {pk_semantic or fk['references_table']}"
+
+            schema_info["relationships"].append(relationship)
 
         self.schema_info = schema_info
-        self.column_semantics = schema_info["column_semantics"]
         return schema_info
 
     def generate_schema_description(self) -> str:
-        """Generate a human-readable description of the database schema."""
+        """Generate a human-readable description of the database schema with LLM inferred semantics."""
         if not self.schema_info:
             self.analyze_schema()
 
@@ -439,33 +601,41 @@ class DatabaseAnalyzer:
                 description += f"  - {rel['table']}.{rel['column']} references {rel['references_table']}.{rel['references_column']}\n"
 
                 # Add semantics for the relationship if available
-                fk_semantic = self.schema_info["column_semantics"].get(f"{rel['table']}.{rel['column']}", "")
-                pk_semantic = self.schema_info["column_semantics"].get(f"{rel['references_table']}.{rel['references_column']}", "")
+                if "semantics" in rel:
+                    description += f"    ({rel['semantics']})\n"
+                else:
+                    fk_semantic = self.schema_info["column_semantics"].get(f"{rel['table']}.{rel['column']}", "")
+                    pk_semantic = self.schema_info["column_semantics"].get(f"{rel['references_table']}.{rel['references_column']}", "")
 
-                if fk_semantic or pk_semantic:
-                    description += f"    (Connects "
-                    if fk_semantic:
-                        description += f"{fk_semantic} "
-                    description += f"to "
-                    if pk_semantic:
-                        description += f"{pk_semantic}"
-                    else:
-                        description += f"{rel['references_table']}"
-                    description += ")\n"
+                    if fk_semantic or pk_semantic:
+                        description += f"    (Connects "
+                        if fk_semantic:
+                            description += f"{fk_semantic} "
+                        description += f"to "
+                        if pk_semantic:
+                            description += f"{pk_semantic}"
+                        else:
+                            description += f"{rel['references_table']}"
+                        description += ")\n"
 
         return description
 
     def generate_schema_for_llm(self) -> str:
-        """Generate a comprehensive schema description for the LLM."""
+        """
+        Generate a comprehensive schema description for the LLM with enhanced semantics.
+        This provides detailed information about column meanings to help the LLM
+        generate more accurate SQL queries.
+        """
         if not self.schema_info:
             self.analyze_schema()
 
         schema_text = "# Database Schema\n\n"
 
-        # Add overall guidance for the model
+        # Add overall guidance for the model with emphasis on semantic distinctions
         schema_text += """
 When interpreting column names and generating SQL queries, please note:
-- Date columns with different names usually have specific meanings (e.g., order_date vs. delivery_date vs. dispatch_date)
+- Pay careful attention to the semantic meaning of each column as provided below
+- Date columns with different names have specific business meanings (e.g., order_date vs. delivery_date vs. dispatch_date)
 - Primary keys are used to uniquely identify records
 - Foreign keys represent relationships between tables
 - Column semantics describe the intended meaning and use of each column
@@ -518,24 +688,27 @@ When interpreting column names and generating SQL queries, please note:
             for rel in self.schema_info["relationships"]:
                 schema_text += f"- {rel['table']}.{rel['column']} → {rel['references_table']}.{rel['references_column']}"
 
-                # Add semantics for the relationship
-                fk_semantic = self.schema_info["column_semantics"].get(f"{rel['table']}.{rel['column']}", "")
-                pk_semantic = self.schema_info["column_semantics"].get(f"{rel['references_table']}.{rel['references_column']}", "")
+                # Add semantics for the relationship if available
+                if "semantics" in rel:
+                    schema_text += f" ({rel['semantics']})"
+                else:
+                    fk_semantic = self.schema_info["column_semantics"].get(f"{rel['table']}.{rel['column']}", "")
+                    pk_semantic = self.schema_info["column_semantics"].get(f"{rel['references_table']}.{rel['references_column']}", "")
 
-                if fk_semantic or pk_semantic:
-                    schema_text += f" (Connects "
-                    if fk_semantic:
-                        schema_text += f"{fk_semantic} "
-                    schema_text += f"to "
-                    if pk_semantic:
-                        schema_text += f"{pk_semantic}"
-                    else:
-                        schema_text += f"{rel['references_table']}"
-                    schema_text += ")"
+                    if fk_semantic or pk_semantic:
+                        schema_text += f" (Connects "
+                        if fk_semantic:
+                            schema_text += f"{fk_semantic} "
+                        schema_text += f"to "
+                        if pk_semantic:
+                            schema_text += f"{pk_semantic}"
+                        else:
+                            schema_text += f"{rel['references_table']}"
+                        schema_text += ")"
 
                 schema_text += "\n"
 
-        # Add a list of date-related columns with their meanings for easy reference
+        # Add a special section for date columns to highlight their differences
         date_columns = {}
         for table, table_info in self.schema_info["tables"].items():
             for column in table_info["columns"]:
@@ -546,11 +719,50 @@ When interpreting column names and generating SQL queries, please note:
 
         if date_columns:
             schema_text += "\n## Date/Time Column Reference\n\n"
+            schema_text += "When working with date/time columns, pay special attention to these semantics:\n\n"
             schema_text += "| Column | Meaning |\n"
             schema_text += "|--------|--------|\n"
 
             for col, meaning in date_columns.items():
                 schema_text += f"| {col} | {meaning} |\n"
+
+            schema_text += "\n"
+
+            # Add special note about common date confusion points
+            schema_text += """
+### Important Date Column Distinctions
+
+When working with date columns, be careful to distinguish between columns with similar names but different business meanings:
+
+- **Order/Purchase dates** vs **Shipping/Dispatch dates** vs **Delivery dates**:
+  These represent different stages in an order lifecycle and should not be used interchangeably.
+
+- **Created dates** vs **Updated dates**:
+  "Created" columns represent when a record was first added, while "Updated" columns
+  show when it was last modified.
+
+- **Start dates** vs **End dates**:
+  These define time periods and should be used appropriately in range queries.
+"""
+
+        # Add common query patterns to help the LLM
+        schema_text += """
+## Query Generation Guidance
+
+When generating SQL queries:
+
+1. Use column semantics to select the appropriate columns for the business question
+2. For questions about timelines, identify which specific date columns are relevant
+3. When filtering by status, use the appropriate status column and values
+4. For questions about quantities or amounts, identify whether to use raw values or perform calculations
+5. Use appropriate joins based on the relationship semantics
+
+### Example Scenarios:
+
+- For "orders placed last month but not yet delivered", use both the order date column AND the delivery date column
+- For "customer spending patterns", focus on payment-related columns rather than just order totals
+- For inventory questions, use stock-related columns with the appropriate status filters
+"""
 
         return schema_text
 
@@ -580,6 +792,7 @@ When interpreting column names and generating SQL queries, please note:
         finally:
             cursor.close()
 
+
 def extract_sql_from_response(response: str) -> str:
     """
     Extract SQL query from the LLM response, focusing on the content inside triple backticks.
@@ -605,6 +818,7 @@ def extract_sql_from_response(response: str) -> str:
     sql_query = sql_query.replace('`', '')
 
     return sql_query
+
 
 class LlamaInterface:
     """Interface for LLM-based natural language to SQL conversion using LLM Runtime API."""
@@ -637,7 +851,7 @@ class LlamaInterface:
         return full_response
 
     async def generate_sql_async(self, question: str, schema_description: str) -> str:
-        """Generate SQL from natural language using LLM Runtime."""
+        """Generate SQL from natural language using LLM Runtime with enhanced schema awareness."""
         prompt = f"""
 You are an expert SQL query generator for PostgreSQL databases.
 Given the database schema below, generate a SQL query to answer the question.
@@ -649,15 +863,21 @@ Question: {question}
 IMPORTANT GUIDELINES:
 1. Pay close attention to column semantics and meanings when choosing columns.
 2. Distinguish between similar but functionally different columns (e.g., order_date vs. delivery_date vs. dispatch_date).
+   - Each date column has a specific business meaning that has been inferred by the LLM and included in the schema.
+   - Always use the date column that most closely matches the business meaning in the question.
 3. Use appropriate joins based on the relationships defined in the schema.
 4. Ensure data types match when making comparisons.
 5. Use table aliases for readability in complex queries.
 6. For date/time operations, use appropriate PostgreSQL functions.
+7. Use the column semantics to guide your choice of:
+   - Which columns to select to answer the business question
+   - Which tables to join and on which columns
+   - Which columns to filter or aggregate
 
 Format your response using triple backticks. Place the SQL query inside these backticks like this:
-```sql
+'''sql
 SELECT * FROM table WHERE condition;
-```
+'''
 
 Make sure the query inside the backticks is valid PostgreSQL syntax with no comments or additional text.
 """
@@ -670,7 +890,7 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
         return asyncio.run(self.generate_sql_async(question, schema_description))
 
     async def explain_results_async(self, question: str, sql_query: str, results: List[Dict[str, Any]], error: str = None) -> str:
-        """Explain the results in natural language."""
+        """Explain the results in natural language with enhanced semantic awareness."""
         if error:
             prompt = f"""
 Question: {question}
@@ -699,6 +919,7 @@ When explaining the results:
 2. Distinguish between similar date columns if multiple are used (e.g., "delivery_date represents when the items were delivered to the customer, while dispatch_date shows when they left the warehouse").
 3. Be clear about what each number or value represents in business terms.
 4. Explain any aggregations or calculations performed.
+5. Focus on answering the specific business question that was asked.
 
 Keep your explanation clear, concise, and focused on what the user actually asked.
 If the results contain a lot of data, summarize the key points.
@@ -711,18 +932,25 @@ If the results contain a lot of data, summarize the key points.
         """Synchronous wrapper for explain_results_async."""
         return asyncio.run(self.explain_results_async(question, sql_query, results, error))
 
+
 def main():
 
     st.title("SQL Assistant powered by Power10 MMA")
     st.write("Ask questions about your PostgreSQL database in plain English.")
 
-    # Check for session state initialization
+    # Initialize all session state variables
     if 'connected' not in st.session_state:
         st.session_state['connected'] = False
     if 'query_history' not in st.session_state:
         st.session_state['query_history'] = []
     if 'llm_initialized' not in st.session_state:
         st.session_state['llm_initialized'] = False
+    if 'db_analyzer' not in st.session_state:
+        st.session_state['db_analyzer'] = None
+    if 'schema_description' not in st.session_state:
+        st.session_state['schema_description'] = ""
+    if 'schema_for_llm' not in st.session_state:
+        st.session_state['schema_for_llm'] = ""
 
     # Sidebar for LLM settings
     st.sidebar.header("Runtime API Settings")
@@ -766,13 +994,15 @@ def main():
         else:
             with st.spinner("Connecting to database and analyzing schema..."):
                 try:
-                    # Initialize the database analyzer
+                    # Initialize the database analyzer with LLM integration
                     db_analyzer = DatabaseAnalyzer(
                         dbname=db_name,
                         user=db_user,
                         password=db_password,
                         host=db_host,
-                        port=db_port
+                        port=db_port,
+                        llm_host=llama_host,
+                        llm_port=llama_port
                     )
 
                     # Try to connect
@@ -781,8 +1011,8 @@ def main():
                     if success:
                         st.sidebar.success(message)
 
-                        # Analyze the schema
-                        with st.spinner("Analyzing database schema and inferring column semantics..."):
+                        # Analyze the schema with LLM-enhanced semantics
+                        with st.spinner("Analyzing database schema and inferring column semantics with LLM..."):
                             schema_info = db_analyzer.analyze_schema()
                             schema_description = db_analyzer.generate_schema_description()
                             schema_for_llm = db_analyzer.generate_schema_for_llm()
@@ -793,16 +1023,59 @@ def main():
                         st.session_state['schema_for_llm'] = schema_for_llm
                         st.session_state['connected'] = True
 
-                        st.sidebar.success("Successfully connected and analyzed the database schema!")
+                        st.sidebar.success("Successfully connected and analyzed the database schema with LLM-enhanced semantics!")
                     else:
                         st.sidebar.error(message)
                 except Exception as e:
                     st.sidebar.error(f"Error: {str(e)}")
 
-    # Option to view database schema
-    if st.session_state['connected']:
+# Option to view database schema
+    if st.session_state.get('connected', False):
         with st.sidebar.expander("View Database Schema"):
-            st.text(st.session_state['schema_description'])
+            # Add tabs for different schema views
+            schema_tab1, schema_tab2 = st.tabs(["Schema Overview", "Column Semantics"])
+
+            with schema_tab1:
+                st.text(st.session_state.get('schema_description', "No schema description available"))
+
+            with schema_tab2:
+                # Display column semantics in a more structured format
+                if ('db_analyzer' in st.session_state and
+                    st.session_state['db_analyzer'] is not None and
+                    hasattr(st.session_state['db_analyzer'], 'column_semantics') and
+                    st.session_state['db_analyzer'].column_semantics):
+
+                    semantics = st.session_state['db_analyzer'].column_semantics
+                    st.subheader("Column Semantics from LLM")
+
+                    # Group semantics by table
+                    tables = {}
+                    for col_key, meaning in semantics.items():
+                        try:
+                            table_name, col_name = col_key.split('.')
+                            if table_name not in tables:
+                                tables[table_name] = []
+                            tables[table_name].append((col_name, meaning))
+                        except ValueError:
+                            # Handle case where col_key doesn't have expected format
+                            continue
+
+                    # Create a selectbox to choose which table to view
+                    table_names = sorted(tables.keys())
+                    if table_names:
+                        selected_table = st.selectbox("Select a table", table_names)
+
+                        # Show columns for the selected table
+                        if selected_table in tables:
+                            st.subheader(f"Table: {selected_table}")
+                            columns = tables[selected_table]
+                            semantics_df = pd.DataFrame(columns, columns=['Column', 'Semantic Meaning'])
+                            st.dataframe(semantics_df)
+                    else:
+                        st.info("No tables with semantics found.")
+                else:
+                    st.info("No column semantics available. Connect to a database and analyze the schema first.")
+
 
     # Main area for question input
     st.header("Ask a Question")
@@ -832,7 +1105,7 @@ def main():
             with results_container:
                 with st.spinner("Generating SQL query with LLM..."):
                     try:
-                        # Generate SQL with LLM
+                        # Generate SQL with LLM using enhanced schema
                         raw_response = asyncio.run(st.session_state['llama_interface'].get_llama_response(
                             f"""
 You are an expert SQL query generator for PostgreSQL databases.
@@ -845,15 +1118,18 @@ Question: {question}
 IMPORTANT GUIDELINES:
 1. Pay close attention to column semantics and meanings when choosing columns.
 2. Distinguish between similar but functionally different columns (e.g., order_date vs. delivery_date vs. dispatch_date).
+   - Each date column has a specific business meaning as described in the schema.
+   - Always use the date column that most closely matches the business meaning in the question.
 3. Use appropriate joins based on the relationships defined in the schema.
 4. Ensure data types match when making comparisons.
 5. Use table aliases for readability in complex queries.
 6. For date/time operations, use appropriate PostgreSQL functions.
+7. Use the column semantics to guide your choice of which columns to select, join, and filter on.
 
 Format your response using triple backticks. Place the SQL query inside these backticks like this:
-```sql
+'''sql
 SELECT * FROM table WHERE condition;
-```
+'''
 
 Make sure the query inside the backticks is valid PostgreSQL syntax with no comments or additional text.
 """
@@ -1067,7 +1343,7 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
 
         ### Understanding Column Semantics
 
-        The tool automatically infers the meaning of columns based on naming patterns.
+        The tool uses the LLM to infer the meaning of columns based on their names, types, and sample values.
         For example:
         - `created_at` typically represents when a record was created
         - `delivery_date` refers to when items were delivered to a customer
@@ -1083,6 +1359,14 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
         - For questions involving dates, clarify which date you mean (e.g., "Find orders shipped last month but not yet delivered")
         - **Specify time periods** for time-based queries
         - **Include aggregation terms** like "total," "average," or "count" when appropriate
+
+        ### Examples of Good Questions
+
+        - "Show me all orders that were placed in January but not delivered until February"
+        - "What is the average time between order placement and dispatch for each product category?"
+        - "Which customers have placed orders but never had a delivery completed?"
+        - "List the top 5 products by revenue for each month in 2023"
+        - "How many customers made their first purchase in 2023 and then made a repeat purchase within 30 days?"
         """)
 
     # Footer
@@ -1093,7 +1377,7 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
     This app connects to your LLM Runtime API service to convert natural
     language questions into SQL queries for PostgreSQL databases.
 
-    The app uses column semantic analysis to better understand
+    The app uses LLM-based column semantic analysis to better understand
     your database structure and field meanings.
 
     Make sure your LLM Runtime API service is running and accessible at

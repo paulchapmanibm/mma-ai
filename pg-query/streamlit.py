@@ -13,7 +13,7 @@ import re
 
 # Set page config at the top level before any other Streamlit commands
 st.set_page_config(
-    page_title="SQL Assistant (Llama)",
+    page_title="SQL Assistant (Using Power MMA)",
     page_icon="🤖",
     layout="wide"
 )
@@ -32,6 +32,7 @@ class DatabaseAnalyzer:
         }
         self.connection = None
         self.schema_info = {}
+        self.column_semantics = {}  # Store inferred meanings of column names
 
     def connect(self) -> Tuple[bool, str]:
         """Establish connection to the database."""
@@ -69,7 +70,8 @@ class DatabaseAnalyzer:
 
         cursor = self.connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("""
-            SELECT column_name, data_type, is_nullable
+            SELECT column_name, data_type, is_nullable, column_default,
+                   character_maximum_length, numeric_precision, numeric_scale
             FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = %s
         """, (table_name,))
@@ -79,7 +81,11 @@ class DatabaseAnalyzer:
             columns.append({
                 "name": row["column_name"],
                 "type": row["data_type"],
-                "nullable": row["is_nullable"]
+                "nullable": row["is_nullable"],
+                "default": row["column_default"],
+                "max_length": row["character_maximum_length"],
+                "precision": row["numeric_precision"],
+                "scale": row["numeric_scale"]
             })
 
         cursor.close()
@@ -118,6 +124,188 @@ class DatabaseAnalyzer:
         cursor.close()
         return foreign_keys
 
+    def get_primary_keys(self) -> Dict[str, List[str]]:
+        """Get primary key columns for each table."""
+        if not self.connection:
+            self.connect()
+
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT
+                tc.table_name,
+                kcu.column_name
+            FROM
+                information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+            WHERE
+                tc.constraint_type = 'PRIMARY KEY'
+                AND tc.table_schema = 'public'
+            ORDER BY tc.table_name, kcu.ordinal_position
+        """)
+
+        primary_keys = {}
+        for table_name, column_name in cursor.fetchall():
+            if table_name not in primary_keys:
+                primary_keys[table_name] = []
+            primary_keys[table_name].append(column_name)
+
+        cursor.close()
+        return primary_keys
+
+    def get_comment_for_column(self, table_name: str, column_name: str) -> str:
+        """Get the comment (if any) for a specific column."""
+        if not self.connection:
+            self.connect()
+
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT pg_description.description
+            FROM pg_description
+            JOIN pg_class ON pg_description.objoid = pg_class.oid
+            JOIN pg_attribute ON pg_attribute.attrelid = pg_class.oid
+                             AND pg_description.objsubid = pg_attribute.attnum
+            WHERE pg_class.relname = %s AND pg_attribute.attname = %s
+        """, (table_name, column_name))
+
+        result = cursor.fetchone()
+        cursor.close()
+
+        return result[0] if result and result[0] else ""
+
+    def get_comment_for_table(self, table_name: str) -> str:
+        """Get the comment (if any) for a specific table."""
+        if not self.connection:
+            self.connect()
+
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT pg_description.description
+            FROM pg_description
+            JOIN pg_class ON pg_description.objoid = pg_class.oid
+            WHERE pg_class.relname = %s AND pg_description.objsubid = 0
+        """, (table_name,))
+
+        result = cursor.fetchone()
+        cursor.close()
+
+        return result[0] if result and result[0] else ""
+
+    def infer_column_semantics(self, table_name: str, column_name: str, data_type: str) -> str:
+        """
+        Infer the semantic meaning of a column based on its name and type.
+        This is a heuristic-based approach to understand column purposes.
+        """
+        column_key = f"{table_name}.{column_name}"
+
+        # Check if we already analyzed this column
+        if column_key in self.column_semantics:
+            return self.column_semantics[column_key]
+
+        # Try to get official comment from database
+        comment = self.get_comment_for_column(table_name, column_name)
+        if comment:
+            self.column_semantics[column_key] = comment
+            return comment
+
+        # Common naming patterns for date/time fields
+        date_created_patterns = ['created_at', 'creation_date', 'date_created', 'created_on']
+        date_updated_patterns = ['updated_at', 'modification_date', 'date_updated', 'modified_on', 'last_updated']
+        date_deleted_patterns = ['deleted_at', 'deletion_date', 'date_deleted', 'removed_on']
+
+        # Common patterns for specific types of dates
+        delivery_patterns = ['delivery_date', 'delivered_at', 'date_delivered']
+        dispatch_patterns = ['dispatch_date', 'dispatched_at', 'date_dispatched', 'shipped_date', 'shipped_at']
+        order_patterns = ['order_date', 'ordered_at', 'date_ordered']
+        payment_patterns = ['payment_date', 'paid_at', 'date_paid']
+
+        # Id patterns
+        id_patterns = ['_id', 'id', '_key', 'uuid', 'guid']
+
+        # Status patterns
+        status_patterns = ['status', 'state', 'condition']
+
+        # Lowercased for case-insensitive matching
+        col_lower = column_name.lower()
+
+        # Infer meanings based on patterns
+        meaning = ""
+
+        # Date semantics
+        if data_type in ('date', 'timestamp', 'timestamptz', 'datetime'):
+            if any(pattern in col_lower for pattern in date_created_patterns):
+                meaning = "Timestamp when the record was created"
+            elif any(pattern in col_lower for pattern in date_updated_patterns):
+                meaning = "Timestamp when the record was last updated"
+            elif any(pattern in col_lower for pattern in date_deleted_patterns):
+                meaning = "Timestamp when the record was deleted (for soft deletes)"
+            elif any(pattern in col_lower for pattern in delivery_patterns):
+                meaning = "Date when items were actually delivered to the customer"
+            elif any(pattern in col_lower for pattern in dispatch_patterns):
+                meaning = "Date when items were dispatched from the warehouse/facility"
+            elif any(pattern in col_lower for pattern in order_patterns):
+                meaning = "Date when the order was placed"
+            elif any(pattern in col_lower for pattern in payment_patterns):
+                meaning = "Date when payment was received"
+            elif 'due' in col_lower:
+                meaning = "Due date or deadline"
+            elif 'start' in col_lower:
+                meaning = "Start date of an event or period"
+            elif 'end' in col_lower:
+                meaning = "End date of an event or period"
+
+        # Numeric semantics
+        elif data_type in ('integer', 'bigint', 'numeric', 'decimal', 'double precision'):
+            if 'price' in col_lower or 'cost' in col_lower or 'amount' in col_lower:
+                meaning = "Monetary value"
+            elif 'quantity' in col_lower or 'count' in col_lower or 'number' in col_lower:
+                meaning = "Quantity or count"
+            elif 'discount' in col_lower:
+                meaning = "Discount value (possibly percentage if between 0-1 or 0-100)"
+            elif 'total' in col_lower:
+                meaning = "Total calculated value"
+            elif any(col_lower.endswith(suffix) for suffix in id_patterns):
+                meaning = "Identifier or foreign key"
+
+        # Boolean semantics
+        elif data_type == 'boolean':
+            if 'is_' in col_lower or 'has_' in col_lower:
+                attribute = col_lower.replace('is_', '').replace('has_', '')
+                meaning = f"Indicates if the record {attribute}"
+            elif 'active' in col_lower or 'enabled' in col_lower:
+                meaning = "Indicates if the record is active or enabled"
+
+        # String semantics
+        elif data_type in ('character varying', 'varchar', 'text', 'char'):
+            if any(pattern in col_lower for pattern in status_patterns):
+                meaning = "Status or state of the record"
+            elif 'name' in col_lower:
+                meaning = "Name or title"
+            elif 'description' in col_lower or 'desc' in col_lower:
+                meaning = "Descriptive text"
+            elif 'code' in col_lower:
+                meaning = "Code or identifier"
+            elif 'address' in col_lower:
+                meaning = "Address information"
+            elif 'email' in col_lower:
+                meaning = "Email address"
+            elif 'phone' in col_lower:
+                meaning = "Phone number"
+
+        # If no specific meaning was inferred
+        if not meaning:
+            if any(col_lower.endswith(suffix) for suffix in id_patterns):
+                if col_lower == 'id' or col_lower.endswith('_id'):
+                    relation = col_lower.replace('_id', '')
+                    if relation:
+                        meaning = f"Identifier for a {relation}"
+                    else:
+                        meaning = "Primary identifier"
+
+        # Save inferred meaning
+        self.column_semantics[column_key] = meaning
+        return meaning
+
     def get_sample_data(self, table_name: str, limit: int = 3) -> List[Dict[str, Any]]:
         """Get sample data from a table."""
         if not self.connection:
@@ -146,17 +334,42 @@ class DatabaseAnalyzer:
         """Analyze the database schema and store the information."""
         tables = self.get_tables()
         foreign_keys = self.get_foreign_keys()
+        primary_keys = self.get_primary_keys()
 
         schema_info = {
             "tables": {},
             "relationships": [],
-            "sample_data": {}
+            "primary_keys": primary_keys,
+            "sample_data": {},
+            "column_semantics": {}
         }
 
         # Get information about each table and its columns
         for table in tables:
             columns = self.get_table_columns(table)
-            schema_info["tables"][table] = columns
+
+            # Get table comment
+            table_comment = self.get_comment_for_table(table)
+
+            # Process each column and add semantics
+            processed_columns = []
+            for column in columns:
+                # Infer semantics for this column
+                semantics = self.infer_column_semantics(table, column["name"], column["type"])
+
+                # Add semantics to column info
+                column_with_semantics = column.copy()
+                if semantics:
+                    column_with_semantics["semantics"] = semantics
+                    schema_info["column_semantics"][f"{table}.{column['name']}"] = semantics
+
+                processed_columns.append(column_with_semantics)
+
+            # Store table with its columns and comments
+            schema_info["tables"][table] = {
+                "columns": processed_columns,
+                "comment": table_comment if table_comment else ""
+            }
 
             # Get sample data
             sample_data = self.get_sample_data(table)
@@ -173,6 +386,7 @@ class DatabaseAnalyzer:
             })
 
         self.schema_info = schema_info
+        self.column_semantics = schema_info["column_semantics"]
         return schema_info
 
     def generate_schema_description(self) -> str:
@@ -183,13 +397,32 @@ class DatabaseAnalyzer:
         description = "Database Schema:\n\n"
 
         # Describe each table and its columns
-        for table_name, columns in self.schema_info["tables"].items():
-            description += f"Table: {table_name}\n"
+        for table_name, table_info in self.schema_info["tables"].items():
+            description += f"Table: {table_name}"
+
+            # Add table comment if available
+            if table_info.get("comment"):
+                description += f" - {table_info['comment']}"
+            description += "\n"
+
             description += "Columns:\n"
 
-            for column in columns:
+            for column in table_info["columns"]:
                 nullable = "NULL" if column["nullable"] == "YES" else "NOT NULL"
-                description += f"  - {column['name']} ({column['type']}, {nullable})\n"
+                default = f", DEFAULT: {column['default']}" if column.get("default") else ""
+
+                description += f"  - {column['name']} ({column['type']}, {nullable}{default})"
+
+                # Add semantics if available
+                if "semantics" in column and column["semantics"]:
+                    description += f" - {column['semantics']}"
+
+                description += "\n"
+
+            # Add primary key information
+            if table_name in self.schema_info.get("primary_keys", {}):
+                pk_columns = self.schema_info["primary_keys"][table_name]
+                description += f"  Primary Key: {', '.join(pk_columns)}\n"
 
             # Add sample data if available
             if table_name in self.schema_info.get("sample_data", {}):
@@ -205,6 +438,21 @@ class DatabaseAnalyzer:
             for rel in self.schema_info["relationships"]:
                 description += f"  - {rel['table']}.{rel['column']} references {rel['references_table']}.{rel['references_column']}\n"
 
+                # Add semantics for the relationship if available
+                fk_semantic = self.schema_info["column_semantics"].get(f"{rel['table']}.{rel['column']}", "")
+                pk_semantic = self.schema_info["column_semantics"].get(f"{rel['references_table']}.{rel['references_column']}", "")
+
+                if fk_semantic or pk_semantic:
+                    description += f"    (Connects "
+                    if fk_semantic:
+                        description += f"{fk_semantic} "
+                    description += f"to "
+                    if pk_semantic:
+                        description += f"{pk_semantic}"
+                    else:
+                        description += f"{rel['references_table']}"
+                    description += ")\n"
+
         return description
 
     def generate_schema_for_llm(self) -> str:
@@ -214,17 +462,41 @@ class DatabaseAnalyzer:
 
         schema_text = "# Database Schema\n\n"
 
+        # Add overall guidance for the model
+        schema_text += """
+When interpreting column names and generating SQL queries, please note:
+- Date columns with different names usually have specific meanings (e.g., order_date vs. delivery_date vs. dispatch_date)
+- Primary keys are used to uniquely identify records
+- Foreign keys represent relationships between tables
+- Column semantics describe the intended meaning and use of each column
+- Respect data types when comparing or filtering values
+- Use appropriate joins based on the relationships defined below
+
+"""
+
         # Describe each table and its columns
-        for table_name, columns in self.schema_info["tables"].items():
-            schema_text += f"## Table: {table_name}\n"
+        for table_name, table_info in self.schema_info["tables"].items():
+            schema_text += f"## Table: {table_name}"
 
-            # Create a markdown table for columns
-            schema_text += "| Column Name | Data Type | Nullable |\n"
-            schema_text += "|------------|-----------|----------|\n"
+            # Add table comment if available
+            if table_info.get("comment"):
+                schema_text += f" - {table_info['comment']}"
+            schema_text += "\n\n"
 
-            for column in columns:
+            # Create a markdown table for columns with semantics
+            schema_text += "| Column Name | Data Type | Nullable | Default | Primary Key | Meaning |\n"
+            schema_text += "|------------|-----------|----------|---------|-------------|--------|\n"
+
+            # Check if this table has a primary key
+            pk_columns = self.schema_info["primary_keys"].get(table_name, [])
+
+            for column in table_info["columns"]:
                 nullable = "YES" if column["nullable"] == "YES" else "NO"
-                schema_text += f"| {column['name']} | {column['type']} | {nullable} |\n"
+                default = column.get("default", "")
+                is_pk = "YES" if column["name"] in pk_columns else "NO"
+                semantics = column.get("semantics", "")
+
+                schema_text += f"| {column['name']} | {column['type']} | {nullable} | {default} | {is_pk} | {semantics} |\n"
 
             # Add sample data if available
             if table_name in self.schema_info.get("sample_data", {}) and self.schema_info["sample_data"][table_name]:
@@ -239,11 +511,46 @@ class DatabaseAnalyzer:
 
             schema_text += "\n"
 
-        # Describe relationships
+        # Describe relationships with semantics
         if self.schema_info["relationships"]:
-            schema_text += "## Relationships\n"
+            schema_text += "## Relationships\n\n"
+
             for rel in self.schema_info["relationships"]:
-                schema_text += f"- {rel['table']}.{rel['column']} → {rel['references_table']}.{rel['references_column']}\n"
+                schema_text += f"- {rel['table']}.{rel['column']} → {rel['references_table']}.{rel['references_column']}"
+
+                # Add semantics for the relationship
+                fk_semantic = self.schema_info["column_semantics"].get(f"{rel['table']}.{rel['column']}", "")
+                pk_semantic = self.schema_info["column_semantics"].get(f"{rel['references_table']}.{rel['references_column']}", "")
+
+                if fk_semantic or pk_semantic:
+                    schema_text += f" (Connects "
+                    if fk_semantic:
+                        schema_text += f"{fk_semantic} "
+                    schema_text += f"to "
+                    if pk_semantic:
+                        schema_text += f"{pk_semantic}"
+                    else:
+                        schema_text += f"{rel['references_table']}"
+                    schema_text += ")"
+
+                schema_text += "\n"
+
+        # Add a list of date-related columns with their meanings for easy reference
+        date_columns = {}
+        for table, table_info in self.schema_info["tables"].items():
+            for column in table_info["columns"]:
+                if column["type"] in ('date', 'timestamp', 'timestamptz', 'datetime'):
+                    semantic = column.get("semantics", "")
+                    if semantic:
+                        date_columns[f"{table}.{column['name']}"] = semantic
+
+        if date_columns:
+            schema_text += "\n## Date/Time Column Reference\n\n"
+            schema_text += "| Column | Meaning |\n"
+            schema_text += "|--------|--------|\n"
+
+            for col, meaning in date_columns.items():
+                schema_text += f"| {col} | {meaning} |\n"
 
         return schema_text
 
@@ -300,15 +607,15 @@ def extract_sql_from_response(response: str) -> str:
     return sql_query
 
 class LlamaInterface:
-    """Interface for LLM-based natural language to SQL conversion using Llama API."""
+    """Interface for LLM-based natural language to SQL conversion using LLM Runtime API."""
 
     def __init__(self, host="llama-service", port="8080"):
-        """Initialize the Llama interface with host and port."""
+        """Initialize the LLM Runtime interface with host and port."""
         self.host = host
         self.port = port
 
     async def get_llama_response(self, prompt):
-        """Get a response from the Llama API."""
+        """Get a response from the LLM Runtime API."""
         json_data = {
             'prompt': prompt,
             'temperature': 0.1,
@@ -330,7 +637,7 @@ class LlamaInterface:
         return full_response
 
     async def generate_sql_async(self, question: str, schema_description: str) -> str:
-        """Generate SQL from natural language using Llama."""
+        """Generate SQL from natural language using LLM Runtime."""
         prompt = f"""
 You are an expert SQL query generator for PostgreSQL databases.
 Given the database schema below, generate a SQL query to answer the question.
@@ -339,8 +646,15 @@ Given the database schema below, generate a SQL query to answer the question.
 
 Question: {question}
 
-IMPORTANT:
-I want you to format your response using triple backticks. Place the SQL query inside these backticks like this:
+IMPORTANT GUIDELINES:
+1. Pay close attention to column semantics and meanings when choosing columns.
+2. Distinguish between similar but functionally different columns (e.g., order_date vs. delivery_date vs. dispatch_date).
+3. Use appropriate joins based on the relationships defined in the schema.
+4. Ensure data types match when making comparisons.
+5. Use table aliases for readability in complex queries.
+6. For date/time operations, use appropriate PostgreSQL functions.
+
+Format your response using triple backticks. Place the SQL query inside these backticks like this:
 ```sql
 SELECT * FROM table WHERE condition;
 ```
@@ -380,6 +694,12 @@ SQL Query: {sql_query}
 Results: {results_str}
 
 Provide a natural language explanation of these results that directly answers the original question.
+When explaining the results:
+1. Connect column names to their actual business meaning (e.g., "order_date refers to when the order was placed").
+2. Distinguish between similar date columns if multiple are used (e.g., "delivery_date represents when the items were delivered to the customer, while dispatch_date shows when they left the warehouse").
+3. Be clear about what each number or value represents in business terms.
+4. Explain any aggregations or calculations performed.
+
 Keep your explanation clear, concise, and focused on what the user actually asked.
 If the results contain a lot of data, summarize the key points.
 """
@@ -393,7 +713,7 @@ If the results contain a lot of data, summarize the key points.
 
 def main():
 
-    st.title("SQL Assistant powered by Llama")
+    st.title("SQL Assistant powered by Power10 MMA")
     st.write("Ask questions about your PostgreSQL database in plain English.")
 
     # Check for session state initialization
@@ -405,17 +725,17 @@ def main():
         st.session_state['llm_initialized'] = False
 
     # Sidebar for LLM settings
-    st.sidebar.header("Llama API Settings")
+    st.sidebar.header("Runtime API Settings")
 
-    # Llama connection settings
-    llama_host = st.sidebar.text_input("Llama API Host", "llama-service")
-    llama_port = st.sidebar.text_input("Llama API Port", "8080")
+    # LLM Runtime connection settings
+    llama_host = st.sidebar.text_input("LLM Runtime API Host", "llama-service")
+    llama_port = st.sidebar.text_input("LLM Runtime API Port", "8080")
 
     # Initialize LLM button
-    if st.sidebar.button("Initialize Llama Interface"):
-        with st.spinner("Initializing Llama interface..."):
+    if st.sidebar.button("Initialize LLM Runtime Interface"):
+        with st.spinner("Initializing LLM Runtime interface..."):
             try:
-                # Initialize the Llama interface
+                # Initialize the LLM Runtime interface
                 llama_interface = LlamaInterface(
                     host=llama_host,
                     port=llama_port
@@ -425,9 +745,9 @@ def main():
                 st.session_state['llama_interface'] = llama_interface
                 st.session_state['llm_initialized'] = True
 
-                st.sidebar.success("Llama interface initialized successfully!")
+                st.sidebar.success("LLM Runtime interface initialized successfully!")
             except Exception as e:
-                st.sidebar.error(f"Error initializing Llama interface: {str(e)}")
+                st.sidebar.error(f"Error initializing LLM Runtime interface: {str(e)}")
 
     # Database connection inputs
     st.sidebar.header("Database Connection")
@@ -442,7 +762,7 @@ def main():
         if not all([db_name, db_user, db_password]):
             st.sidebar.error("Please provide all required database connection details.")
         elif not st.session_state['llm_initialized']:
-            st.sidebar.error("Please initialize the Llama interface first.")
+            st.sidebar.error("Please initialize the LLM Runtime interface first.")
         else:
             with st.spinner("Connecting to database and analyzing schema..."):
                 try:
@@ -462,7 +782,7 @@ def main():
                         st.sidebar.success(message)
 
                         # Analyze the schema
-                        with st.spinner("Analyzing database schema..."):
+                        with st.spinner("Analyzing database schema and inferring column semantics..."):
                             schema_info = db_analyzer.analyze_schema()
                             schema_description = db_analyzer.generate_schema_description()
                             schema_for_llm = db_analyzer.generate_schema_for_llm()
@@ -497,22 +817,22 @@ def main():
         submit_button = st.button("Generate SQL", type="primary", disabled=not ready_to_query)
     with col2:
         if not st.session_state['llm_initialized']:
-            st.info("Initialize the Llama interface first.")
+            st.info("Initialize the LLM Runtime interface first.")
         elif not st.session_state['connected']:
             st.info("Connect to a database to start asking questions.")
 
     # Process the question when submitted
     if submit_button and question:
         if not st.session_state['connected'] or not st.session_state['llm_initialized']:
-            st.error("Please make sure the Llama interface is initialized and you're connected to a database.")
+            st.error("Please make sure the LLM Runtime interface is initialized and you're connected to a database.")
         else:
             # Create a container for the results
             results_container = st.container()
 
             with results_container:
-                with st.spinner("Generating SQL query with Llama..."):
+                with st.spinner("Generating SQL query with LLM..."):
                     try:
-                        # Generate SQL with Llama
+                        # Generate SQL with LLM
                         raw_response = asyncio.run(st.session_state['llama_interface'].get_llama_response(
                             f"""
 You are an expert SQL query generator for PostgreSQL databases.
@@ -522,8 +842,15 @@ Given the database schema below, generate a SQL query to answer the question.
 
 Question: {question}
 
-IMPORTANT:
-I want you to format your response using triple backticks. Place the SQL query inside these backticks like this:
+IMPORTANT GUIDELINES:
+1. Pay close attention to column semantics and meanings when choosing columns.
+2. Distinguish between similar but functionally different columns (e.g., order_date vs. delivery_date vs. dispatch_date).
+3. Use appropriate joins based on the relationships defined in the schema.
+4. Ensure data types match when making comparisons.
+5. Use table aliases for readability in complex queries.
+6. For date/time operations, use appropriate PostgreSQL functions.
+
+Format your response using triple backticks. Place the SQL query inside these backticks like this:
 ```sql
 SELECT * FROM table WHERE condition;
 ```
@@ -549,7 +876,7 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
                                 results, columns = st.session_state['db_analyzer'].execute_query(sql_query)
 
                                 # Generate explanation
-                                with st.spinner("Generating explanation with Llama..."):
+                                with st.spinner("Generating explanation with LLM..."):
                                     explanation = st.session_state['llama_interface'].explain_results(
                                         question,
                                         sql_query,
@@ -589,7 +916,7 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
                                 st.error(f"Error executing the query: {str(e)}")
 
                                 # Generate explanation for the error
-                                with st.spinner("Analyzing the error with Llama..."):
+                                with st.spinner("Analyzing the error with LLM..."):
                                     error_explanation = st.session_state['llama_interface'].explain_results(
                                         question,
                                         sql_query,
@@ -693,63 +1020,67 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
         st.info("Connect to a database to manually execute SQL queries.")
 
     # Display query history
-if st.session_state.get('connected', False) and st.session_state.get('query_history', []):
-    st.header("Query History")
+    if st.session_state.get('connected', False) and st.session_state.get('query_history', []):
+        st.header("Query History")
 
-    # Create tabs for each history item
-    history_items = list(reversed(st.session_state['query_history']))
-    tab_labels = [f"Query {i+1}: {item['timestamp']}" for i, item in enumerate(history_items)]
+        # Create tabs for each history item
+        history_items = list(reversed(st.session_state['query_history']))
+        tab_labels = [f"Query {i+1}: {item['timestamp']}" for i, item in enumerate(history_items)]
 
-    # Use tabs instead of nested expanders
-    tabs = st.tabs(tab_labels)
+        # Use tabs instead of nested expanders
+        tabs = st.tabs(tab_labels)
 
-    for i, (tab, item) in enumerate(zip(tabs, history_items)):
-        with tab:
-            st.markdown(f"**Question:** {item['question']}")
-            st.markdown(f"**Time:** {item['timestamp']}")
+        for i, (tab, item) in enumerate(zip(tabs, history_items)):
+            with tab:
+                st.markdown(f"**Question:** {item['question']}")
+                st.markdown(f"**Time:** {item['timestamp']}")
 
-            # Show SQL
-            st.subheader("SQL Query")
-            st.code(item['sql_query'], language="sql")
+                # Show SQL
+                st.subheader("SQL Query")
+                st.code(item['sql_query'], language="sql")
 
-            # Show results info
-            st.markdown(f"**Results:** {item['results_count']} rows returned")
-            st.markdown(f"**Explanation:** {item['explanation']}")
+                # Show results info
+                st.markdown(f"**Results:** {item['results_count']} rows returned")
+                st.markdown(f"**Explanation:** {item['explanation']}")
 
-            # Add a "Use this query" button
-            if st.button(f"Use this query", key=f"use_query_{i}"):
-                st.session_state['reuse_query'] = item['sql_query']
-                st.experimental_rerun()
+                # Add a "Use this query" button
+                if st.button(f"Use this query", key=f"use_query_{i}"):
+                    st.session_state['reuse_query'] = item['sql_query']
+                    st.experimental_rerun()
 
-    # Check if there's a query to reuse
-    if 'reuse_query' in st.session_state:
-        # Pre-fill the manual query area
-        st.session_state['manual_query'] = st.session_state['reuse_query']
-        # Clear the reuse flag
-        del st.session_state['reuse_query']
+        # Check if there's a query to reuse
+        if 'reuse_query' in st.session_state:
+            # Pre-fill the manual query area
+            st.session_state['manual_query'] = st.session_state['reuse_query']
+            # Clear the reuse flag
+            del st.session_state['reuse_query']
 
     # Display help information
     with st.expander("Help & Tips"):
         st.markdown("""
         ### How to Use This Tool
 
-        1. **Initialize the Llama interface** by providing the host and port of your Llama API
+        1. **Initialize the LLM Runtime interface** by providing the host and port of your LLM Runtime API
         2. **Connect to your database** by entering your PostgreSQL credentials
         3. **Ask questions** about your data in plain English
-        4. Llama will generate an SQL query, execute it, and explain the results
+        4. LLM Runtime will generate an SQL query, execute it, and explain the results
 
-        ### Troubleshooting SQL Errors
+        ### Understanding Column Semantics
 
-        If you encounter SQL errors, you can:
+        The tool automatically infers the meaning of columns based on naming patterns.
+        For example:
+        - `created_at` typically represents when a record was created
+        - `delivery_date` refers to when items were delivered to a customer
+        - `dispatch_date` indicates when items were sent from the warehouse
 
-        1. **Fix the query directly** in the error section
-        2. **Use the manual query editor** to write your own SQL
-        3. **Check query history** for examples of working queries
+        These semantic meanings help the LLM Runtime model choose the right columns
+        when generating SQL queries from your questions.
 
         ### Effective Question Tips
 
         - **Be specific** about what you're looking for
-        - **Mention table or column names** if you know them
+        - **Use business terminology** that matches your data's purpose
+        - For questions involving dates, clarify which date you mean (e.g., "Find orders shipped last month but not yet delivered")
         - **Specify time periods** for time-based queries
         - **Include aggregation terms** like "total," "average," or "count" when appropriate
         """)
@@ -757,12 +1088,15 @@ if st.session_state.get('connected', False) and st.session_state.get('query_hist
     # Footer
     st.sidebar.markdown("---")
     st.sidebar.info("""
-    **SQL Assistant powered by Llama**
+    **SQL Assistant powered by Power10 MMA**
 
-    This app connects to your Llama API service to convert natural
+    This app connects to your LLM Runtime API service to convert natural
     language questions into SQL queries for PostgreSQL databases.
 
-    Make sure your Llama API service is running and accessible at
+    The app uses column semantic analysis to better understand
+    your database structure and field meanings.
+
+    Make sure your LLM Runtime API service is running and accessible at
     the host and port provided in the settings.
     """)
 

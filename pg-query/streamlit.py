@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import asyncio
 import json
+import re
 
 # Import our modules
 from database_analyzer import DatabaseAnalyzer
@@ -231,11 +232,10 @@ def main():
             results_container = st.container()
 
             with results_container:
-                with st.spinner("Generating SQL query with LLM..."):
-                    try:
+                try:
+                    with st.spinner("Generating SQL query with LLM..."):
                         # Generate SQL with LLM using enhanced schema
-                        raw_response = asyncio.run(st.session_state['llama_interface'].get_llama_response(
-                            f"""
+                        prompt = f"""
 You are an expert SQL query generator for PostgreSQL databases.
 Given the database schema below, generate a SQL query to answer the question.
 
@@ -246,22 +246,20 @@ Question: {question}
 IMPORTANT GUIDELINES:
 1. Pay close attention to column semantics and meanings when choosing columns.
 2. Distinguish between similar but functionally different columns (e.g., order_date vs. delivery_date vs. dispatch_date).
-   - Each date column has a specific business meaning as described in the schema.
-   - Always use the date column that most closely matches the business meaning in the question.
 3. Use appropriate joins based on the relationships defined in the schema.
 4. Ensure data types match when making comparisons.
 5. Use table aliases for readability in complex queries.
 6. For date/time operations, use appropriate PostgreSQL functions.
-7. Use the column semantics to guide your choice of which columns to select, join, and filter on.
 
-Format your response using triple backticks. Place the SQL query inside these backticks like this:
-'''sql
-SELECT * FROM table WHERE condition;
-'''
+YOUR RESPONSE MUST FOLLOW THIS EXACT FORMAT:
+1. You MUST wrap your SQL query in triple backticks with the sql language specifier.
+2. Place ONLY the executable SQL query inside the backticks.
+3. The query inside the backticks must be valid SQL syntax with no comments.
+4. Provide only ONE query, not multiple options.
 
-Make sure the query inside the backticks is valid PostgreSQL syntax with no comments or additional text.
+IMPORTANT: I will only execute the code found between the triple backticks, so make sure your complete query is contained there.
 """
-                        ))
+                        raw_response = asyncio.run(st.session_state['llama_interface'].get_llama_response(prompt))
 
                         # Display the raw response in an expander for debugging
                         with st.expander("Raw LLM Response", expanded=False):
@@ -270,109 +268,117 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
                         # Extract SQL query from the response
                         sql_query = extract_sql_from_response(raw_response)
 
+                        # Validate we got a proper SQL query
+                        if not sql_query:
+                            st.error("Failed to generate a valid SQL query. The LLM did not provide a query in the correct format (between triple backticks).")
+                            # Display the raw response for debugging
+                            with st.expander("Raw LLM Response", expanded=True):
+                                st.text(raw_response)
+                            st.stop()  # Stop execution if no valid query was found
+
                         # Display the extracted SQL
                         st.subheader("Generated SQL Query")
                         st.code(sql_query, language="sql")
 
-                        # Execute the query
-                        with st.spinner("Executing query..."):
-                            try:
-                                results, columns = st.session_state['db_analyzer'].execute_query(sql_query)
+                    # Execute the query
+                    with st.spinner("Executing query..."):
+                        try:
+                            results, columns = st.session_state['db_analyzer'].execute_query(sql_query)
 
-                                # Generate explanation
-                                with st.spinner("Generating explanation with LLM..."):
-                                    explanation = st.session_state['llama_interface'].explain_results(
-                                        question,
-                                        sql_query,
-                                        results
+                            # Generate explanation
+                            with st.spinner("Generating explanation with LLM..."):
+                                explanation = st.session_state['llama_interface'].explain_results(
+                                    question,
+                                    sql_query,
+                                    results
+                                )
+
+                            # Display explanation
+                            st.subheader("Answer")
+                            st.write(explanation)
+
+                            # Display results as a table if available
+                            if results and columns:
+                                with st.expander("View Detailed Results", expanded=True):
+                                    st.subheader("Query Results")
+                                    df = pd.DataFrame(results)
+                                    st.dataframe(df)
+
+                                    # Option to download results as CSV
+                                    csv = df.to_csv(index=False)
+                                    st.download_button(
+                                        label="Download results as CSV",
+                                        data=csv,
+                                        file_name="query_results.csv",
+                                        mime="text/csv"
                                     )
 
-                                # Display explanation
-                                st.subheader("Answer")
-                                st.write(explanation)
+                            # Add to query history
+                            st.session_state['query_history'].append({
+                                "question": question,
+                                "sql_query": sql_query,
+                                "results_count": len(results),
+                                "explanation": explanation,
+                                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                            })
 
-                                # Display results as a table if available
-                                if results and columns:
-                                    with st.expander("View Detailed Results", expanded=True):
-                                        st.subheader("Query Results")
-                                        df = pd.DataFrame(results)
-                                        st.dataframe(df)
+                        except Exception as e:
+                            st.error(f"Error executing the query: {str(e)}")
 
-                                        # Option to download results as CSV
-                                        csv = df.to_csv(index=False)
-                                        st.download_button(
-                                            label="Download results as CSV",
-                                            data=csv,
-                                            file_name="query_results.csv",
-                                            mime="text/csv"
-                                        )
+                            # Generate explanation for the error
+                            with st.spinner("Analyzing the error with LLM..."):
+                                error_explanation = st.session_state['llama_interface'].explain_results(
+                                    question,
+                                    sql_query,
+                                    [],
+                                    error=str(e)
+                                )
 
-                                # Add to query history
-                                st.session_state['query_history'].append({
-                                    "question": question,
-                                    "sql_query": sql_query,
-                                    "results_count": len(results),
-                                    "explanation": explanation,
-                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                })
+                            st.subheader("Error Analysis")
+                            st.write(error_explanation)
 
-                            except Exception as e:
-                                st.error(f"Error executing the query: {str(e)}")
+                            # Offer manual edit option
+                            st.subheader("Fix the Query")
+                            fixed_query = st.text_area("Edit the SQL query to fix the error:", value=sql_query, height=150)
 
-                                # Generate explanation for the error
-                                with st.spinner("Analyzing the error with LLM..."):
-                                    error_explanation = st.session_state['llama_interface'].explain_results(
-                                        question,
-                                        sql_query,
-                                        [],
-                                        error=str(e)
-                                    )
+                            if st.button("Execute Fixed Query"):
+                                with st.spinner("Executing fixed query..."):
+                                    try:
+                                        results, columns = st.session_state['db_analyzer'].execute_query(fixed_query)
 
-                                st.subheader("Error Analysis")
-                                st.write(error_explanation)
+                                        st.success("Query executed successfully!")
 
-                                # Offer manual edit option
-                                st.subheader("Fix the Query")
-                                fixed_query = st.text_area("Edit the SQL query to fix the error:", value=sql_query, height=150)
+                                        # Display results
+                                        if results and columns:
+                                            st.subheader("Query Results")
+                                            df = pd.DataFrame(results)
+                                            st.dataframe(df)
 
-                                if st.button("Execute Fixed Query"):
-                                    with st.spinner("Executing fixed query..."):
-                                        try:
-                                            results, columns = st.session_state['db_analyzer'].execute_query(fixed_query)
+                                            # Option to download results as CSV
+                                            csv = df.to_csv(index=False)
+                                            st.download_button(
+                                                label="Download results as CSV",
+                                                data=csv,
+                                                file_name="fixed_query_results.csv",
+                                                mime="text/csv"
+                                            )
+                                        else:
+                                            st.info("Query executed successfully but returned no results.")
 
-                                            st.success("Query executed successfully!")
+                                        # Add to query history
+                                        st.session_state['query_history'].append({
+                                            "question": f"FIXED: {question}",
+                                            "sql_query": fixed_query,
+                                            "results_count": len(results),
+                                            "explanation": "Manually fixed query",
+                                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                                        })
 
-                                            # Display results
-                                            if results and columns:
-                                                st.subheader("Query Results")
-                                                df = pd.DataFrame(results)
-                                                st.dataframe(df)
+                                    except Exception as e:
+                                        st.error(f"Error executing fixed query: {str(e)}")
 
-                                                # Option to download results as CSV
-                                                csv = df.to_csv(index=False)
-                                                st.download_button(
-                                                    label="Download results as CSV",
-                                                    data=csv,
-                                                    file_name="fixed_query_results.csv",
-                                                    mime="text/csv"
-                                                )
-                                            else:
-                                                st.info("Query executed successfully but returned no results.")
-
-                                            # Add to query history
-                                            st.session_state['query_history'].append({
-                                                "question": f"FIXED: {question}",
-                                                "sql_query": fixed_query,
-                                                "results_count": len(results),
-                                                "explanation": "Manually fixed query",
-                                                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                                            })
-
-                                        except Exception as e:
-                                            st.error(f"Error executing fixed query: {str(e)}")
-
-                    except Exception as e:
-                        st.error(f"Error generating SQL: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error generating SQL: {str(e)}")
 
     # Option to manually edit and execute a query
     st.header("Manual SQL Query")
@@ -525,6 +531,7 @@ Make sure the query inside the backticks is valid PostgreSQL syntax with no comm
     - LLM-powered schema analysis for detailed column semantics
     - Table-by-table semantic enhancement
     - Improved natural language understanding of your database
+    - Strict SQL execution safety checks
 
     Make sure your LLM Runtime API service is running and accessible at
     the host and port provided in the settings.

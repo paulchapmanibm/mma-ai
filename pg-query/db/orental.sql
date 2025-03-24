@@ -1,0 +1,162 @@
+-- First, let's insert data into the rentals table
+INSERT INTO rentals (customer_id, rental_date, expected_return_date, actual_return_date, total_amount, deposit_amount, deposit_returned, status, created_by, pickup_location_id, return_location_id, insurance_coverage, po_number, notes)
+VALUES
+    -- Seattle Rentals
+    (1, '2024-02-15', '2024-02-22', '2024-02-22', 3750.00, 1000.00, TRUE, 'Completed', 2, 1, 1, TRUE, 'PO-PNWC-2402', 'Regular customer, no issues'),
+    (3, '2024-01-10', '2024-01-25', '2024-01-27', 12600.00, 3000.00, TRUE, 'Completed', 4, 1, 1, TRUE, 'RDG-240110', 'Returned 2 days late, additional charges applied'),
+    (8, '2024-02-25', '2024-03-10', NULL, 5950.00, 1500.00, FALSE, 'Active', 2, 1, 1, TRUE, 'PSC-240225', 'Multiple items for downtown project'),
+    (5, '2024-03-01', '2024-03-31', NULL, 9700.00, 2500.00, FALSE, 'Active', 4, 1, 1, TRUE, 'CIL-24031', 'Monthly rental for bridge project'),
+    (12, '2024-03-05', '2024-03-12', NULL, 4500.00, 1200.00, FALSE, 'Active', 2, 1, 1, TRUE, 'BMC-240305', 'Waterfront project equipment'),
+    (2, '2024-03-15', '2024-03-18', NULL, 1350.00, 500.00, FALSE, 'Active', 4, 1, 1, TRUE, 'ECB-240315', 'Weekend project rental'),
+    (15, '2024-03-20', '2024-04-03', NULL, 3600.00, 900.00, FALSE, 'Active', 2, 1, 1, TRUE, 'GLL-240320', 'Park renovation equipment'),
+    (4, '2024-03-10', '2024-03-17', NULL, 2450.00, 800.00, FALSE, 'Active', 4, 1, 1, TRUE, 'SES-240310', 'Excavation equipment for new residential development'),
+    (6, '2024-02-01', '2024-02-15', '2024-02-14', 8400.00, 2000.00, TRUE, 'Completed', 2, 1, 1, TRUE, 'OC-240201', 'Returned early, no additional charges'),
+    (10, '2024-03-18', '2024-03-25', NULL, 5200.00, 1300.00, FALSE, 'Active', 4, 1, 1, FALSE, 'SMP-240318', 'Municipal project, insurance waived'),
+    (7, '2024-01-05', '2024-01-12', '2024-01-12', 2800.00, 700.00, TRUE, 'Completed', 2, 1, 1, TRUE, 'EBS-240105', 'Regular delivery equipment'),
+    
+    -- Houston Rentals
+    (32, '2024-01-15', '2024-02-15', '2024-02-17', 14500.00, 3500.00, TRUE, 'Completed', 11, 2, 2, TRUE, 'TOFSPO-240115', 'Oil field equipment, returned with minor damage'),
+    (38, '2024-02-10', '2024-02-24', '2024-02-24', 9200.00, 2300.00, TRUE, 'Completed', 13, 2, 2, TRUE, 'WCDC-240210', 'The Woodlands development project'),
+    (31, '2024-03-01', '2024-03-31', NULL, 11500.00, 2800.00, FALSE, 'Active', 11, 2, 2, TRUE, 'GCD-240301', 'Monthly rental for large development'),
+    (35, '2024-02-20', '2024-03-05', '2024-03-04', 6800.00, 1700.00, TRUE, 'Completed', 13, 2, 2, TRUE, 'HMCD-240220', 'Medical center expansion equipment'),
+    (33, '2024-03-10', '2024-03-24', NULL, 8400.00, 2100.00, FALSE, 'Active', 11, 2, 2, TRUE, 'BCC-240310', 'Bayou City waterfront project'),
+    (40, '2024-03-15', '2024-04-15', NULL, 13200.00, 3300.00, FALSE, 'Active', 13, 2, 2, TRUE, 'HADA-240315', 'Airport expansion, monthly rental'),
+    (34, '2024-03-05', '2024-03-12', NULL, 4500.00, 1100.00, FALSE, 'Active', 11, 2, 2, TRUE, 'HHC-240305', 'Harbor expansion project'),
+    (37, '2024-01-25', '2024-02-01', '2024-02-02', 3800.00, 950.00, TRUE, 'Completed', 13, 2, 2, TRUE, 'MUD-240125', 'Midtown urban project, returned late'),
+    (36, '2024-03-08', '2024-03-15', NULL, 3200.00, 800.00, FALSE, 'Active', 11, 2, 2, TRUE, 'HRS-240308', 'Heights renovation project'),
+    (39, '2024-03-12', '2024-03-26', NULL, 7600.00, 1900.00, FALSE, 'Active', 13, 2, 2, TRUE, 'SLB-240312', 'Sugar Land commercial development'),
+    
+    -- Chicago Rentals
+    (43, '2024-01-20', '2024-02-20', '2024-02-18', 13800.00, 3500.00, TRUE, 'Completed', 19, 3, 3, TRUE, 'CRB-240120', 'River front commercial development'),
+    (49, '2024-02-05', '2024-02-19', '2024-02-19', 7200.00, 1800.00, TRUE, 'Completed', 21, 3, 3, TRUE, 'NSC-240205', 'North Shore residential project'),
+    (45, '2024-03-01', '2024-03-15', NULL, 8400.00, 2100.00, FALSE, 'Active', 19, 3, 3, TRUE, 'LCC-240301', 'Loop commercial renovation'),
+    (50, '2024-03-05', '2024-04-05', NULL, 15600.00, 3900.00, FALSE, 'Active', 21, 3, 3, TRUE, 'OEG-240305', 'O''Hare expansion equipment'),
+    (46, '2024-02-15', '2024-02-22', '2024-02-23', 4200.00, 1050.00, TRUE, 'Completed', 19, 3, 3, TRUE, 'WVR-240215', 'Wrigleyville renovation, returned late'),
+    (51, '2024-03-10', '2024-03-24', NULL, 8800.00, 2200.00, FALSE, 'Active', 21, 3, 3, TRUE, 'MMD-240310', 'Magnificent Mile storefront renovation'),
+    (44, '2024-03-12', '2024-03-19', NULL, 4200.00, 1050.00, FALSE, 'Active', 19, 3, 3, TRUE, 'MIG-240312', 'Industrial park upgrades'),
+    (48, '2024-01-15', '2024-01-29', '2024-01-29', 7600.00, 1900.00, TRUE, 'Completed', 21, 3, 3, FALSE, 'CMP-240115', 'Municipal project, insurance waived'),
+    
+    -- Miami Rentals
+    (63, '2024-01-10', '2024-01-24', '2024-01-26', 8400.00, 2100.00, TRUE, 'Completed', 26, 4, 4, TRUE, 'SBC-240110', 'South Beach hotel renovation, returned late'),
+    (64, '2024-02-01', '2024-02-29', '2024-02-28', 13200.00, 3300.00, TRUE, 'Completed', 28, 4, 4, TRUE, 'MWD-240201', 'Waterfront condominium development'),
+    (65, '2024-03-01', '2024-03-15', NULL, 7600.00, 1900.00, FALSE, 'Active', 26, 4, 4, TRUE, 'BBG-240301', 'Brickell high-rise equipment'),
+    (67, '2024-03-05', '2024-03-19', NULL, 6400.00, 1600.00, FALSE, 'Active', 28, 4, 4, TRUE, 'CGD-240305', 'Coconut Grove marina project'),
+    (70, '2024-02-15', '2024-02-22', '2024-02-22', 3800.00, 950.00, TRUE, 'Completed', 26, 4, 4, TRUE, 'MDI-240215', 'Infrastructure upgrade project'),
+    (68, '2024-03-10', '2024-04-10', NULL, 12000.00, 3000.00, FALSE, 'Active', 28, 4, 4, TRUE, 'PMC-240310', 'Port expansion monthly rental'),
+    (69, '2024-03-08', '2024-03-15', NULL, 3200.00, 800.00, FALSE, 'Active', 26, 4, 4, TRUE, 'WUB-240308', 'Wynwood art district renovation'),
+    
+    -- Denver Rentals
+    (83, '2024-01-15', '2024-01-29', '2024-01-28', 7200.00, 1800.00, TRUE, 'Completed', 32, 5, 5, TRUE, 'RMD-240115', 'Mountain residential development'),
+    (84, '2024-02-01', '2024-02-15', '2024-02-16', 8400.00, 2100.00, TRUE, 'Completed', 33, 5, 5, TRUE, 'MHC-240201', 'Highway expansion project, returned late'),
+    (85, '2024-03-01', '2024-03-08', NULL, 3600.00, 900.00, FALSE, 'Active', 32, 5, 5, TRUE, 'FRB-240301', 'Commercial building renovation'),
+    (86, '2024-03-05', '2024-03-12', NULL, 3800.00, 950.00, FALSE, 'Active', 33, 5, 5, TRUE, 'CIS-240305', 'Industrial facility upgrade'),
+    (88, '2024-02-20', '2024-03-20', '2024-03-18', 11500.00, 2800.00, FALSE, 'Completed', 32, 5, 5, TRUE, 'DMP-240220', 'Municipal project, returned early'),
+    
+    -- Atlanta Rentals
+    (103, '2024-01-20', '2024-02-03', '2024-02-03', 7600.00, 1900.00, TRUE, 'Completed', 37, 6, 6, TRUE, 'PCG-240120', 'Commercial office renovation'),
+    (104, '2024-02-10', '2024-02-24', '2024-02-25', 8800.00, 2200.00, TRUE, 'Completed', 39, 6, 6, TRUE, 'AMB-240210', 'Metropolitan transit expansion'),
+    (105, '2024-03-01', '2024-03-15', NULL, 7200.00, 1800.00, FALSE, 'Active', 37, 6, 6, TRUE, 'GID-240301', 'Industrial park development'),
+    (106, '2024-03-08', '2024-03-22', NULL, 6400.00, 1600.00, FALSE, 'Active', 39, 6, 6, TRUE, 'BCC-240308', 'Buckhead commercial center'),
+    (108, '2024-02-15', '2024-03-15', '2024-03-14', 13500.00, 3375.00, TRUE, 'Completed', 37, 6, 6, TRUE, 'HAC-240215', 'Airport construction project');
+
+-- Now let's insert rental_items that link rentals to specific equipment
+INSERT INTO rental_items (rental_id, equipment_id, hourly_usage, daily_rate, quantity, start_condition, end_condition, damages_reported, damage_description, damage_charges)
+VALUES
+    -- Seattle Rental Items
+    (1, 1, 40, 450.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (1, 14, 32, 225.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (2, 2, 120, 475.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (2, 5, 95, 550.00, 1, 'Excellent condition', 'Fair condition', TRUE, 'Minor hydraulic leak', 350.00),
+    (3, 3, NULL, 350.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (3, 25, NULL, 280.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (4, 4, NULL, 485.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (5, 6, NULL, 525.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (6, 13, NULL, 220.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (7, 37, NULL, 175.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (7, 38, NULL, 300.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (8, 25, NULL, 280.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (8, 26, NULL, 260.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (9, 7, 75, 515.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (9, 41, 60, 205.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (10, 9, NULL, 650.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (11, 49, 40, 350.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    
+    -- Houston Rental Items
+    (12, 10, 150, 675.00, 1, 'Excellent condition', 'Fair condition', TRUE, 'Track damage', 750.00),
+    (12, 16, 120, 230.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (13, 11, 85, 600.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (13, 19, 45, 325.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (14, 12, NULL, 625.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (14, 28, NULL, 175.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (15, 15, 75, 230.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (15, 31, 45, 345.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (16, 8, NULL, 525.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (16, 20, NULL, 340.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (17, 32, NULL, 330.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (17, 54, NULL, 365.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (18, 17, 60, 235.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (18, 42, 35, 205.00, 1, 'Excellent condition', 'Good condition', TRUE, 'Damaged tires', 150.00),
+    (19, 18, NULL, 230.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (19, 22, NULL, 260.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (20, 44, NULL, 425.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (20, 56, NULL, 405.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    
+    -- Chicago Rental Items
+    (21, 23, 95, 340.00, 1, 'Good condition', 'Fair condition', TRUE, 'Hydraulic fluid leak', 250.00),
+    (21, 39, 65, 195.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (21, 59, 80, 440.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (22, 24, 75, 330.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (22, 40, 35, 185.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (23, 21, NULL, 180.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (23, 27, NULL, 175.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (23, 43, NULL, 450.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (24, 29, NULL, 300.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (24, 47, NULL, 325.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (24, 55, NULL, 440.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (25, 30, 45, 245.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (25, 34, 30, 185.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (26, 35, NULL, 195.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (26, 51, NULL, 425.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (27, 36, NULL, 205.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (28, 45, 85, 115.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (28, 52, 60, 385.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    
+    -- Miami Rental Items
+    (29, 33, 65, 340.00, 1, 'Good condition', 'Fair condition', TRUE, 'Console damage', 200.00),
+    (29, 46, 70, 275.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (30, 53, 120, 440.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (30, 57, 90, 425.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (31, 48, NULL, 350.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (31, 58, NULL, 365.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (32, 50, NULL, 225.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (32, 60, NULL, 385.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (33, 11, 55, 600.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (34, 12, NULL, 625.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (34, 28, NULL, 175.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (35, 15, NULL, 230.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    
+    -- Denver Rental Items
+    (36, 23, 85, 340.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (36, 39, 60, 195.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (37, 24, 80, 330.00, 1, 'Good condition', 'Fair condition', TRUE, 'Bucket damage', 350.00),
+    (37, 40, 65, 185.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (38, 21, NULL, 180.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (38, 27, NULL, 175.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (39, 29, NULL, 300.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (39, 47, NULL, 325.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (40, 30, 110, 245.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (40, 34, 95, 185.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (40, 45, 85, 115.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    
+    -- Atlanta Rental Items
+    (41, 31, 70, 345.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (41, 43, 85, 450.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (42, 32, 95, 330.00, 1, 'Excellent condition', 'Fair condition', TRUE, 'Control panel damage', 275.00),
+    (42, 44, 75, 425.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (43, 33, NULL, 340.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (43, 46, NULL, 275.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (44, 35, NULL, 195.00, 1, 'Good condition', NULL, FALSE, NULL, 0.00),
+    (44, 51, NULL, 425.00, 1, 'Excellent condition', NULL, FALSE, NULL, 0.00),
+    (45, 36, 120, 205.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00),
+    (45, 52, 90, 385.00, 1, 'Excellent condition', 'Good condition', FALSE, NULL, 0.00),
+    (45, 60, 80, 385.00, 1, 'Good condition', 'Good condition', FALSE, NULL, 0.00);

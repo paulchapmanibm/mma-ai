@@ -847,6 +847,25 @@ When generating SQL queries:
         if not self.connection:
             self.connect()
 
+        # Check if the current connection is in an aborted transaction state
+        # If so, rollback and reconnect to get a fresh connection
+        try:
+            check_cursor = self.connection.cursor()
+            check_cursor.execute("SELECT 1")
+            check_cursor.close()
+        except psycopg2.errors.InFailedSqlTransaction:
+            # Rollback the aborted transaction
+            self.connection.rollback()
+            print("Rolled back failed transaction")
+        except Exception as e:
+            # If connection is in a bad state, close and reconnect
+            print(f"Connection check failed: {e}")
+            try:
+                self.connection.close()
+            except:
+                pass
+            self.connect()
+            
         cursor = self.connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
         try:
             cursor.execute(query)
@@ -862,8 +881,34 @@ When generating SQL queries:
                     result_dict[column] = row[i]
                 results.append(result_dict)
 
+            # Explicitly commit the transaction if successful
+            self.connection.commit()
             return results, columns
         except Exception as e:
+            # Explicitly rollback the transaction on error
+            self.connection.rollback()
             raise Exception(f"Error executing query: {e}")
         finally:
             cursor.close()
+
+    def check_connection_health(self) -> bool:
+        """
+        Check if the database connection is healthy and not in a failed transaction state.
+        Returns True if connection is good, False otherwise.
+        """
+        if not self.connection:
+            return False
+            
+        try:
+            check_cursor = self.connection.cursor()
+            check_cursor.execute("SELECT 1")
+            check_cursor.close()
+            return True
+        except psycopg2.errors.InFailedSqlTransaction:
+            # Rollback the aborted transaction
+            self.connection.rollback()
+            print("Rolled back failed transaction")
+            return True
+        except Exception as e:
+            print(f"Connection health check failed: {e}")
+            return False

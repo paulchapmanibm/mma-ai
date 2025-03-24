@@ -1,4 +1,5 @@
-FROM quay.io/daniel_casali/pdf_rag_milvus:latest # This is the image generated from ../streamlit/container/Dockerfile
+# This is the image generated from ../streamlit/container/Dockerfile
+FROM quay.io/daniel_casali/pdf_rag_milvus:latest 
 USER 0
 RUN /opt/conda/bin/pip install psycopg2-binary
 COPY * /work/

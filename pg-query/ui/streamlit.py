@@ -283,6 +283,17 @@ IMPORTANT: I will only execute the code found between the triple backticks, so m
                     # Execute the query
                     with st.spinner("Executing query..."):
                         try:
+                            # First check if the connection is healthy
+                            if not st.session_state['db_analyzer'].check_connection_health():
+                                # If not, try to reconnect
+                                st.warning("Database connection issue detected. Attempting to reconnect...")
+                                success, message = st.session_state['db_analyzer'].connect()
+                                if not success:
+                                    st.error(f"Could not reconnect to database: {message}")
+                                    st.info("Please wait a moment and try again.")
+                                    st.stop()
+                                    
+                            # Now execute the query
                             results, columns = st.session_state['db_analyzer'].execute_query(sql_query)
 
                             # Generate explanation
@@ -324,7 +335,11 @@ IMPORTANT: I will only execute the code found between the triple backticks, so m
 
                         except Exception as e:
                             st.error(f"Error executing the query: {str(e)}")
-
+                            
+                            # Add a retry button for convenience
+                            if st.button("Try Again", key="retry_query"):
+                                st.experimental_rerun()
+                            
                             # Generate explanation for the error
                             with st.spinner("Analyzing the error with LLM..."):
                                 error_explanation = st.session_state['llama_interface'].explain_results(
@@ -344,6 +359,15 @@ IMPORTANT: I will only execute the code found between the triple backticks, so m
                             if st.button("Execute Fixed Query"):
                                 with st.spinner("Executing fixed query..."):
                                     try:
+                                        # Check connection health again before executing fixed query
+                                        if not st.session_state['db_analyzer'].check_connection_health():
+                                            st.warning("Database connection issue detected. Attempting to reconnect...")
+                                            success, message = st.session_state['db_analyzer'].connect()
+                                            if not success:
+                                                st.error(f"Could not reconnect to database: {message}")
+                                                st.info("Please wait a moment and try again.")
+                                                st.stop()
+                                        
                                         results, columns = st.session_state['db_analyzer'].execute_query(fixed_query)
 
                                         st.success("Query executed successfully!")
@@ -369,13 +393,17 @@ IMPORTANT: I will only execute the code found between the triple backticks, so m
                                         st.session_state['query_history'].append({
                                             "question": f"FIXED: {question}",
                                             "sql_query": fixed_query,
-                                            "results_count": len(results),
+                                            "results_count": len(results) if results else 0,
                                             "explanation": "Manually fixed query",
                                             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
                                         })
 
                                     except Exception as e:
                                         st.error(f"Error executing fixed query: {str(e)}")
+                                        # Add a retry button
+                                        if st.button("Try Again", key="retry_fixed"):
+                                            st.experimental_rerun()
+
 
                 except Exception as e:
                     st.error(f"Error generating SQL: {str(e)}")

@@ -1,0 +1,22 @@
+[
+  {
+    "title": "Find Available Equipment by Category and Location",
+    "query": "SELECT e.equipment_id, e.equipment_name, e.model_number, e.daily_rental_rate, e.weekly_rental_rate, e.monthly_rental_rate, e.condition_rating, c.category_name, l.location_name, l.city, l.state FROM equipment e JOIN equipment_categories c ON e.category_id = c.category_id JOIN inventory_locations l ON e.location_id = l.location_id WHERE e.status = 'Available' AND c.category_name = 'Excavator' AND l.city = 'Seattle' ORDER BY e.daily_rental_rate;"
+  },
+  {
+    "title": "Track Overdue Equipment",
+    "query": "SELECT r.rental_id, r.expected_return_date, CURRENT_DATE - r.expected_return_date AS days_overdue, c.company_name, c.contact_person, c.phone, e.equipment_name, e.model_number, l.location_name AS pickup_location FROM rentals r JOIN customers c ON r.customer_id = c.customer_id JOIN rental_items ri ON r.rental_id = ri.rental_id JOIN equipment e ON ri.equipment_id = e.equipment_id JOIN inventory_locations l ON r.pickup_location_id = l.location_id WHERE r.status = 'Active' AND r.expected_return_date < CURRENT_DATE AND r.actual_return_date IS NULL ORDER BY days_overdue DESC;"
+  },
+  {
+    "title": "Equipment Utilization Report",
+    "query": "SELECT e.equipment_id, e.equipment_name, e.model_number, c.category_name, l.location_name, COUNT(ri.rental_item_id) AS total_rentals, SUM(CASE WHEN r.actual_return_date IS NOT NULL THEN r.actual_return_date - r.rental_date ELSE CURRENT_DATE - r.rental_date END) AS total_days_rented, ROUND(SUM(CASE WHEN r.actual_return_date IS NOT NULL THEN r.actual_return_date - r.rental_date ELSE CURRENT_DATE - r.rental_date END)::NUMERIC / (CURRENT_DATE - DATE '2024-01-01')::NUMERIC * 100, 2) AS utilization_rate FROM equipment e LEFT JOIN rental_items ri ON e.equipment_id = ri.equipment_id LEFT JOIN rentals r ON ri.rental_id = r.rental_id AND r.rental_date >= '2024-01-01' JOIN equipment_categories c ON e.category_id = c.category_id JOIN inventory_locations l ON e.location_id = l.location_id GROUP BY e.equipment_id, e.equipment_name, e.model_number, c.category_name, l.location_name ORDER BY utilization_rate DESC;"
+  },
+  {
+    "title": "Maintenance Due Report",
+    "query": "WITH latest_maintenance AS (SELECT equipment_id, MAX(maintenance_date) AS last_maint_date FROM maintenance_records WHERE status = 'Completed' GROUP BY equipment_id), last_rental AS (SELECT ri.equipment_id, MAX(r.actual_return_date) AS last_return_date FROM rental_items ri JOIN rentals r ON ri.rental_id = r.rental_id WHERE r.actual_return_date IS NOT NULL GROUP BY ri.equipment_id) SELECT e.equipment_id, e.equipment_name, e.model_number, e.manufacturer, e.hours_used, ec.category_name, lm.last_maint_date, lr.last_return_date, e.maintenance_interval, l.location_name, l.city, CASE WHEN e.hours_used >= (SELECT MAX(hours_added) + e.maintenance_interval FROM maintenance_records WHERE equipment_id = e.equipment_id AND status = 'Completed') THEN 'Due by Hours' WHEN CURRENT_DATE >= (lm.last_maint_date + (e.maintenance_interval * INTERVAL '1 day')) THEN 'Due by Date' ELSE 'Not Due' END AS maintenance_status FROM equipment e JOIN equipment_categories ec ON e.category_id = ec.category_id JOIN inventory_locations l ON e.location_id = l.location_id LEFT JOIN latest_maintenance lm ON e.equipment_id = lm.equipment_id LEFT JOIN last_rental lr ON e.equipment_id = lr.equipment_id WHERE e.status != 'Retired' AND (e.hours_used >= (SELECT COALESCE(MAX(hours_added), 0) + e.maintenance_interval FROM maintenance_records WHERE equipment_id = e.equipment_id AND status = 'Completed') OR CURRENT_DATE >= (lm.last_maint_date + (e.maintenance_interval * INTERVAL '1 day'))) ORDER BY maintenance_status, lm.last_maint_date;"
+  },
+  {
+    "title": "Revenue by Location Report",
+    "query": "SELECT l.location_id, l.location_name, l.city, l.state, date_trunc('month', p.payment_date) AS month, SUM(CASE WHEN p.is_refund = FALSE THEN p.amount ELSE 0 END) AS gross_revenue, SUM(CASE WHEN p.is_refund = TRUE THEN p.amount ELSE 0 END) AS refunds, SUM(CASE WHEN p.is_refund = FALSE THEN p.amount ELSE 0 END) - SUM(CASE WHEN p.is_refund = TRUE THEN p.amount ELSE 0 END) AS net_revenue FROM payments p JOIN rentals r ON p.rental_id = r.rental_id JOIN inventory_locations l ON r.pickup_location_id = l.location_id WHERE p.payment_date BETWEEN '2024-01-01' AND '2024-12-31' GROUP BY l.location_id, l.location_name, l.city, l.state, date_trunc('month', p.payment_date) ORDER BY l.location_name, month;"
+  }
+]

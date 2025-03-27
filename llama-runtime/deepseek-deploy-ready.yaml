@@ -22,17 +22,17 @@ spec:
             - sh
             - '-c'
             - |
-              if [ ! -f /models/mistral-7b-instruct-v0.3.Q4_K_M.gguf ] ; then
-                curl -L https://huggingface.co/SanctumAI/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf --output /models/mistral-7b-instruct-v0.3.Q4_K_M.gguf
+              if [ ! -f /models/DeepSeek-R1-Distill-Qwen-1.5B-Q8_0.gguf ] ; then
+                curl -L https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q8_0.gguf --output /models/DeepSeek-R1-Distill-Qwen-1.5B-Q8_0.gguf
               else
-                echo "model /models/mistral-7b-instruct-v0.3.Q4_K_M.gguf already present"
+                echo "model /models/DeepSeek-R1-Distill-Qwen-1.5B-Q8_0.gguf already present"
               fi
           resources: {}
       containers:
         - name: llama-cpp
-          image: quay.io/daniel_casali/llama.cpp-mma:v4
+          image: quay.io/daniel_casali/llama.cpp-mma:v5
           imagePullPolicy: Always
-          args: ["-m", "/models/mistral-7b-instruct-v0.3.Q4_K_M.gguf", "--prio", "3", "-c", "4096","-b", "32", "-t", "32", "-n", "-1"]
+          args: ["-m", "/models/DeepSeek-R1-Distill-Qwen-1.5B-Q8_0.gguf", "--prio", "3", "-c", "4096","-b", "32", "-t", "32", "-n", "-1"]
           ports:
             - containerPort: 8080
               name: http

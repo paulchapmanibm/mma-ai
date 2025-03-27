@@ -1,28 +1,26 @@
 FROM registry.access.redhat.com/ubi9/ubi as builder
-
+ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin/:$PATH
+ENV BLA_VENDOR=OpenBLAS
 RUN dnf update -y && dnf install -y \
-  cmake git ninja-build gcc-c++ \
+  cmake git ninja-build gcc-c++  gcc-toolset-13 \
+  && scl enable gcc-toolset-13 bash \
+  && source scl_source enable gcc-toolset-13 \
   && dnf clean all
 
 
-RUN git clone --recursive https://github.com/DanielCasali/OpenBLAS.git && cd OpenBLAS && \
-    make -j$(nproc --all) TARGET=POWER10 USE_THREAD=1 && \
-    make PREFIX=/opt/OpenBLAS install && \
-    cd /
-
-RUN git clone https://github.com/DanielCasali/llama.cpp.git && cd llama.cpp && sed -i "s/powerpc64le/native -mvsx -mtune=native -D__POWER10_VECTOR__/g" ggml/src/CMakeLists.txt && \
+RUN git clone https://github.com/ggml-org/llama.cpp.git  && cd llama.cpp && sed -i "s/powerpc64le/native -mvsx -mtune=native -D__POWER10_VECTOR__/g" ggml/src/CMakeLists.txt && \
     mkdir build; \
     cd build; \
-    cmake -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DBLAS_INCLUDE_DIRS=/opt/OpenBLAS/include -G Ninja ..; \
+    cmake -G Ninja ..; \
     cmake --build . --config Release
 
 CMD bash
 
-FROM registry.access.redhat.com/ubi9/ubi 
+FROM registry.access.redhat.com/ubi9/ubi
 
+ENV  LD_LIBRARY_PATH=/lib
 COPY --from=builder --chmod=755 /llama.cpp/build/bin/llama-server /usr/local/bin
-COPY --from=builder --chmod=644 /llama.cpp/build/src/libllama.so /llama.cpp/build/src/libllama.so
-COPY --from=builder --chmod=644 /llama.cpp/build/ggml/src/libggml.so /llama.cpp/build/ggml/src/libggml.so
+COPY --from=builder --chmod=644 /llama.cpp/build/bin/*.so /lib/
 
 
 ENTRYPOINT [ "/usr/local/bin/llama-server", "--host", "0.0.0.0"]
